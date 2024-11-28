@@ -18,22 +18,17 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // นำเข้า routes
-const routes = require('./routes');
+const { getMainInfo } = require('./routes');
 const loginRoutes = require('./src/routers/LoginRoutes');
 const registerRoutes = require('./src/routers/RegisterRoutes');
-
+const configRoutes = require('./src/routers/ConfigRoutes');
 // นำเข้า database connection
 const db = require('./db');
 
-app.get('/', (req, res) => {
-  res.json(routes.endpoints);
-});
-
-// เพิ่ม middleware สำหรับ login routes
+app.get('/', getMainInfo);
 app.use('/api/v1', loginRoutes);
-
-// เริ่ม middleware สำหรับ register routes
 app.use('/api/v1', registerRoutes);
+app.use('/api/v1', configRoutes);
 
 // เริ่ม server
 const startServer = async () => {
