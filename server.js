@@ -1,6 +1,7 @@
 const express = require('express');
 const app = express();
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 require('dotenv').config();
 const port = process.env.PORT || 3123;
 
@@ -14,13 +15,14 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
+app.use(cookieParser());
 app.use(express.json());
 
 // นำเข้า routes
 const routes = require('./routes');
 const loginRoutes = require('./src/routers/LoginRoutes');
 const registerRoutes = require('./src/routers/RegisterRoutes');
+const userRoutes = require('./src/routers/UserRoutes');
 
 // นำเข้า database connection
 const db = require('./db');
@@ -34,6 +36,9 @@ app.use('/api/v1', loginRoutes);
 
 // เริ่ม middleware สำหรับ register routes
 app.use('/api/v1', registerRoutes);
+
+// เริ่ม middleware สำหรับ user routes
+app.use('/api/v1', userRoutes);
 
 // เริ่ม server
 const startServer = async () => {
