@@ -1,25 +1,24 @@
-name: Publish Website to CPanel
+name: 🚀 Deploy website on push
 
 on:
   push:
     branches:
-      - main
+      - main  # กำหนดให้ workflow ทำงานเมื่อมีการ push ไปที่ main branch
 
 jobs:
-  FTP-Deploy-Action:
-    name: FTP Deploy Action
-    runs-on: ubuntu-latest
+  web-deploy:
+    name: 🎉 Deploy
+    runs-on: ubuntu-latest  # ใช้ Ubuntu ล่าสุดในการรัน
 
     steps:
-    - uses: actions/checkout@v3  # ดึงโค้ดจาก repository
-      with:
-        fetch-depth: 2
+    - name: 🚚 Get latest code
+      uses: actions/checkout@v4  # ใช้ action เพื่อดึงโค้ดจาก repository
 
-    - name: FTP Deploy Action
-      uses: appleboy/ftp-action@v1.0.0
+    - name: 📂 Sync files
+      uses: SamKirkland/FTP-Deploy-Action@v4.3.5  # ใช้เวอร์ชันล่าสุดของ FTP-Deploy-Action
       with:
-        host: ${{ secrets.FTP_SERVER }}  # ข้อมูลเซิร์ฟเวอร์ FTP
-        username: ${{ secrets.FTP_USERNAME }}
-        password: ${{ secrets.FTP_PASSWORD }}
-        port: 21  # ใช้ FTP ปกติ
+        server: ${{ secrets.FTP_SERVER }}  # ใช้เซิร์ฟเวอร์ FTP จาก GitHub Secrets
+        username: ${{ secrets.FTP_USERNAME }}  # ใช้ชื่อผู้ใช้ FTP จาก GitHub Secrets
+        password: ${{ secrets.FTP_PASSWORD }}  # ใช้รหัสผ่าน FTP จาก GitHub Secrets
+        local-dir: ./  # อัปโหลดไฟล์ทั้งหมดจาก repository
         remote-dir: /home/tlgmrvbr/tlgm_api  # โฟลเดอร์ปลายทางบน FTP server
