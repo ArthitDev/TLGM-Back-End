@@ -20,6 +20,3 @@ jobs:
         server: ${{ secrets.FTP_SERVER }}  # ใช้เซิร์ฟเวอร์ FTP จาก GitHub Secrets
         username: ${{ secrets.FTP_USERNAME }}  # ใช้ชื่อผู้ใช้ FTP จาก GitHub Secrets
         password: ${{ secrets.FTP_PASSWORD }}  # ใช้รหัสผ่าน FTP จาก GitHub Secrets
-        local-dir: ./  # อัปโหลดไฟล์ทั้งหมดจาก repository
-        server-dir: tlgm_api/   # โฟลเดอร์ปลายทางบน FTP server
-        dry-run: true
