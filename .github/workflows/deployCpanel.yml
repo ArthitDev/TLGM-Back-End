@@ -21,4 +21,4 @@ jobs:
         username: ${{ secrets.FTP_USERNAME }}  # ใช้ชื่อผู้ใช้ FTP จาก GitHub Secrets
         password: ${{ secrets.FTP_PASSWORD }}  # ใช้รหัสผ่าน FTP จาก GitHub Secrets
         local-dir: ./  # Local directory to upload
-        server-dir: public_html/
+        server-dir: tlgm_api/
