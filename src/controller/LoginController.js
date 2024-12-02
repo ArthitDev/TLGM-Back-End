@@ -30,7 +30,8 @@ class LoginController {
 
             res.cookie('token', token, {
                 httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
+                secure: true,
+                sameSite: 'none',
                 maxAge: 24 * 60 * 60 * 1000
             });
 
@@ -52,11 +53,11 @@ class LoginController {
 
     async logout(req, res) {
         try {
-            // ลบ cookie token
             res.cookie('token', '', {
                 httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
-                expires: new Date(0) // set expiration to past date
+                secure: true,
+                sameSite: 'none',
+                expires: new Date(0)
             });
 
             res.status(200).json({
