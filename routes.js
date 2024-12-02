@@ -3,7 +3,7 @@ const routes = {
     {
       path: "/",
       method: "GET",
-      description: "แสดงรายการ endpoints ทั้งหมด"
+      description: "แสดงรายการ endpoints"
     },
     {
       path: "/api/v1/register",
