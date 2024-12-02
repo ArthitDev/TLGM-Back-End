@@ -23,23 +23,50 @@ class LoginController {
             }
 
             const token = jwt.sign(
-                { userId: user.id, username: user.username },
+                { userId: user.userid, username: user.username },
                 process.env.JWT_SECRET,
-                { expiresIn: '5s' }
+                { expiresIn: '1d' }
             );
+
+            res.cookie('token', token, {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict',
+                maxAge: 24 * 60 * 60 * 1000
+            });
 
             res.status(200).json({
                 message: 'Login successful',
-                token,
                 user: {
-                    id: user.id,
+                    id: user.userid,
                     username: user.username,
-                    name: user.name
+                    name: user.name,
+                    role: user.role
                 }
             });
 
         } catch (error) {
             console.error('Login error:', error);
+            res.status(500).json({ message: 'Internal server error' });
+        }
+    }
+
+    async logout(req, res) {
+        try {
+            // ลบ cookie token
+            res.cookie('token', '', {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict',
+                expires: new Date(0) // set expiration to past date
+            });
+
+            res.status(200).json({
+                success: true,
+                message: 'Logged out successfully'
+            });
+        } catch (error) {
+            console.error('Logout error:', error);
             res.status(500).json({ message: 'Internal server error' });
         }
     }
