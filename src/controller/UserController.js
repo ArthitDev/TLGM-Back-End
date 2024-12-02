@@ -1,5 +1,17 @@
 const db = require('../../db');
 
+// แปลงเบอร์ 0 เป็น +66
+const convertToE164 = (phone) => {
+    if (!phone) return null;
+    return '+66' + phone.substring(1);
+};
+
+// แปลงเบอร์ +66 กลับเป็น 0
+const convertToLocalFormat = (phone) => {
+    if (!phone) return null;
+    return '0' + phone.substring(3); // ตัด +66 ออกและเติม 0
+};
+
 class UserController {
     async updateProfile(req, res) {
         try {
@@ -35,10 +47,13 @@ class UserController {
                 });
             }
 
+            // แปลงเบอร์โทรเป็นรูปแบบ +66 ก่อนเก็บในฐานข้อมูล
+            const e164Phone = convertToE164(phone);
+
             // อัพเดทข้อมูลในฐานข้อมูล
             const [result] = await db.execute(
                 'UPDATE users SET name = ?, phone = ?, api_id = ?, api_hash = ? WHERE userid = ?',
-                [name, phone, api_id, api_hash, userId]
+                [name, e164Phone, api_id, api_hash, userId]
             );
 
             if (result.affectedRows === 0) {
@@ -81,6 +96,11 @@ class UserController {
                 return res.status(404).json({
                     message: 'ไม่พบข้อมูลผู้ใช้'
                 });
+            }
+
+            // แปลงเบอร์กลับเป็นรูปแบบ 0 ก่อนส่งให้ frontend
+            if (rows[0]) {
+                rows[0].phone = convertToLocalFormat(rows[0].phone);
             }
 
             res.status(200).json({
