@@ -23,9 +23,9 @@ class RegisterController {
                 });
             }
 
-            if (password.length < 6) {
+            if (password.length < 6 || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
                 return res.status(400).json({ 
-                    message: 'รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร' 
+                    message: 'รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร และต้องมีตัวอักษรใหญ่และตัวเลข' 
                 });
             }
 
@@ -49,7 +49,7 @@ class RegisterController {
 
         } catch (error) {
             console.error('Registration error:', error);
-            res.status(500).json({ message: 'เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง' });
+            res.status(500).json({ message: 'เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง', error: error.message });
         }
     }
 }
