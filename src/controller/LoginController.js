@@ -22,17 +22,32 @@ class LoginController {
                 return res.status(401).json({ message: 'Invalid username or password' });
             }
 
-            const token = jwt.sign(
-                { userId: user.userid, username: user.username },
+            const accessToken = jwt.sign(
+                { userId: user.userid, username: user.username, role: user.role },
                 process.env.JWT_SECRET,
-                { expiresIn: '1d' }
+                { expiresIn: '15m' }
             );
 
-            res.cookie('token', token, {
+            const refreshToken = jwt.sign(
+                { userId: user.userid, role: user.role },
+                process.env.REFRESH_TOKEN_SECRET,
+                { expiresIn: '7d' }
+            );
+
+            res.cookie('accessToken', accessToken, {
                 httpOnly: true,
                 secure: true,
                 sameSite: 'none',
-                maxAge: 24 * 60 * 60 * 1000
+                maxAge: 15 * 60 * 1000,
+                path: '/',
+            });
+
+            res.cookie('refreshToken', refreshToken, {
+                httpOnly: true,
+                secure: true,
+                sameSite: 'none',
+                maxAge: 7 * 24 * 60 * 60 * 1000,
+                path: '/',
             });
 
             res.status(200).json({
@@ -53,7 +68,14 @@ class LoginController {
 
     async logout(req, res) {
         try {
-            res.cookie('token', '', {
+            res.cookie('accessToken', '', {
+                httpOnly: true,
+                secure: true,
+                sameSite: 'none',
+                expires: new Date(0)
+            });
+
+            res.cookie('refreshToken', '', {
                 httpOnly: true,
                 secure: true,
                 sameSite: 'none',
