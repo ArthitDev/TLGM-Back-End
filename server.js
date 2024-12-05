@@ -23,6 +23,7 @@ const routes = require('./routes');
 const loginRoutes = require('./src/routers/LoginRoutes');
 const registerRoutes = require('./src/routers/RegisterRoutes');
 const userRoutes = require('./src/routers/UserRoutes');
+const configRoutes = require('./src/routers/ConfigRoutes');
 
 // นำเข้า database connection
 const db = require('./db');
@@ -39,6 +40,8 @@ app.use('/api/v1', registerRoutes);
 
 // เริ่ม middleware สำหรับ user routes
 app.use('/api/v1', userRoutes);
+
+app.use('/api/v1', configRoutes);
 
 // เริ่ม server
 const startServer = async () => {
