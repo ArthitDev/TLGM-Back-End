@@ -4,6 +4,7 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 require('dotenv').config();
 const port = process.env.PORT || 3123;
+const tokenMiddleware = require('./src/middleware/tokenMiddleware');
 
 // กำหนดค่า CORS options
 const corsOptions = {
@@ -17,6 +18,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(cookieParser());
 app.use(express.json());
+app.use(tokenMiddleware);
 
 // นำเข้า routes
 const routes = require('./routes');
@@ -24,7 +26,9 @@ const loginRoutes = require('./src/routers/LoginRoutes');
 const registerRoutes = require('./src/routers/RegisterRoutes');
 const userRoutes = require('./src/routers/UserRoutes');
 const protectedRoutes = require('./src/routers/protectedRoutes');
-
+const logoutRoutes = require('./src/routers/LogoutRoutes');
+const refreshTokenRoutes = require('./src/routers/RefreshTokenRoutes');
+const profileRoutes = require('./src/routers/ProfileRoutes');
 // นำเข้า database connection
 const db = require('./db');
 
@@ -43,6 +47,16 @@ app.use('/api/v1', userRoutes);
 
 // เริ่ม middleware สำหรับ protected routes
 app.use('/api/v1', protectedRoutes);
+
+// เริ่ม middleware สำหรับ logout routes
+app.use('/api/v1', logoutRoutes);
+
+// เริ่ม middleware สำหรับ refresh token routes
+app.use('/api/v1', refreshTokenRoutes);
+
+// เริ่ม middleware สำหรับ profile routes
+app.use('/api/v1', profileRoutes);
+
 
 
 // เริ่ม server
