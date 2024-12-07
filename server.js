@@ -24,6 +24,7 @@ const loginRoutes = require('./src/routers/LoginRoutes');
 const registerRoutes = require('./src/routers/RegisterRoutes');
 const userRoutes = require('./src/routers/UserRoutes');
 const protectedRoutes = require('./src/routers/protectedRoutes');
+const configRoutes = require('./src/routers/ConfigRoutes');
 
 // นำเข้า database connection
 const db = require('./db');
@@ -43,6 +44,8 @@ app.use('/api/v1', userRoutes);
 
 // เริ่ม middleware สำหรับ protected routes
 app.use('/api/v1', protectedRoutes);
+
+app.use('/api/v1', configRoutes);
 
 
 // เริ่ม server

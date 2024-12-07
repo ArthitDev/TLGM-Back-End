@@ -34,6 +34,11 @@ const routes = {
       path: "/api/v1/profile",
       method: "PUT",
       description: "อัพเดทข้อมูลส่วนตัวของผู้ใช้"
+    },
+    {
+      path: "/api/v1",
+      method: "PUT",
+      description: "อัพเดทข้อมูลส่วนตัวของผู้ใช้"
     }
   ]
 };

@@ -87,7 +87,7 @@ class UserController {
             console.log('Fetching profile for userId:', userId);
 
             const [rows] = await db.execute(
-                'SELECT userid, username, name, phone, api_id, api_hash, role FROM users WHERE userid = ?',
+                'SELECT userid, username, name, phone, api_id, api_hash FROM users WHERE userid = ?',
                 [userId]
             );
             console.log('Query result:', rows);
