@@ -29,8 +29,13 @@ const protectedRoutes = require('./src/routers/protectedRoutes');
 const logoutRoutes = require('./src/routers/LogoutRoutes');
 const refreshTokenRoutes = require('./src/routers/RefreshTokenRoutes');
 const profileRoutes = require('./src/routers/ProfileRoutes');
+const configRoutes = require('./src/routers/ConfigRoutes');
+const ResiveGroupRouters = require('./src/routers/ResiveGroupRoutes');
+const SandingGroupRouters = require('./src/routers/SandingGroupRoutes');
+
 // นำเข้า database connection
 const db = require('./db');
+const { getSandingGroup } = require('./src/controller/SandingGroupController');
 
 app.get('/', (req, res) => {
   res.json(routes.endpoints);
@@ -57,7 +62,12 @@ app.use('/api/v1', refreshTokenRoutes);
 // เริ่ม middleware สำหรับ profile routes
 app.use('/api/v1', profileRoutes);
 
+app.use('/api/v1', configRoutes);
 
+app.use('/api/v1', ResiveGroupRouters);
+
+
+app.use('/api/v1', SandingGroupRouters);
 
 // เริ่ม server
 const startServer = async () => {

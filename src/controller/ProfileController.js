@@ -13,7 +13,7 @@ class ProfileController {
             const userId = req.user.userId;
 
             const [rows] = await db.execute(
-                'SELECT userid, username, name, phone, api_id, api_hash, role FROM users WHERE userid = ?',
+                'SELECT userid, username, name, phone, api_id, api_hash, role, telegram_auth FROM users WHERE userid = ?',
                 [userId]
             );
 
@@ -47,7 +47,7 @@ class ProfileController {
             const userId = req.user.userId;
 
             const [rows] = await db.execute(
-                'SELECT userid, username, name, phone, api_id, api_hash, role FROM users WHERE userid = ?',
+                'SELECT userid, username, name, phone, api_id, api_hash, role, telegram_auth FROM users WHERE userid = ?',
                 [userId]
             );
 
@@ -82,7 +82,7 @@ class ProfileController {
             const { userId } = req.params;
 
             const [rows] = await db.execute(
-                'SELECT userid, username, name, phone, api_id, api_hash, role FROM users WHERE userid = ?',
+                'SELECT userid, username, name, phone, api_id, api_hash, role, telegram_auth FROM users WHERE userid = ?',
                 [userId]
             );
 
@@ -114,7 +114,7 @@ class ProfileController {
     async getAllProfiles(req, res) {
         try {
             const [rows] = await db.execute(
-                'SELECT userid, username, name, phone, api_id, api_hash, role FROM users ORDER BY userid'
+                'SELECT userid, username, name, phone, api_id, api_hash, role, telegram_auth FROM users ORDER BY userid'
             );
 
             const users = rows.map(user => ({
