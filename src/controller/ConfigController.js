@@ -77,6 +77,11 @@ const startClient = async (req, res) => {
 // หยุด Client และลบ session
 const stopClient = async (req, res) => {
     const { apiId } = req.params;
+    const { userid } = req.body;
+
+    // Log the userid received from the front-end
+    console.log('Received userid from front-end:', userid);
+
     const clientData = clients[apiId];
 
     if (!clientData) {
@@ -84,9 +89,21 @@ const stopClient = async (req, res) => {
     }
 
     try {
+        // Update both telegram_auth and session_hash in database
+        const [result] = await db.execute(
+            'UPDATE users SET telegram_auth = 0, session_hash = NULL WHERE userid = ?',
+            [userid]
+        );
+
+        if (result.affectedRows === 0) {
+            console.error('Database Update Failed: No rows affected.');
+            return res.status(404).json({ error: 'User not found or update failed.' });
+        }
+
         await clientData.client.disconnect();
         delete clients[apiId];
         delete sessions[apiId];
+
         res.json({ message: "Client หยุดทำงานแล้ว", apiId });
     } catch (error) {
         res.status(500).json({ error: "เกิดข้อผิดพลาดในการหยุด Client", details: error.message });
