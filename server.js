@@ -32,6 +32,7 @@ const profileRoutes = require('./src/routers/ProfileRoutes');
 const configRoutes = require('./src/routers/ConfigRoutes');
 const ResiveGroupRouters = require('./src/routers/ResiveGroupRoutes');
 const SandingGroupRouters = require('./src/routers/SandingGroupRoutes');
+const forwardRoutes = require('./src/routers/ForwardRoutes');
 
 // นำเข้า database connection
 const db = require('./db');
@@ -68,6 +69,8 @@ app.use('/api/v1', ResiveGroupRouters);
 
 
 app.use('/api/v1', SandingGroupRouters);
+
+app.use('/api/v1', forwardRoutes);
 
 // เริ่ม server
 const startServer = async () => {

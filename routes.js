@@ -69,6 +69,11 @@ const routes = {
       path: "/api/v1",
       method: "DELETE",
       description: "Sanding group"
+    },
+    {
+      path: "/api/v1",
+      method: "POST",
+      description: "Forward message"
     }
 
   ]
