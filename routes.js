@@ -1,82 +1,17 @@
-const routes = {
-  endpoints: [
-    {
-      path: "/",
-      method: "GET",
-      description: "แสดงรายการ endpoints"
+const getMainInfo = (req, res) => {
+  res.json({
+    message: "SWC API Gateway!",
+    note: "โปรดดูเอกสารประกอบเกี่ยวกับวิธีการใช้ API เหล่านี้.",
+    main_endpoints: {
+      "/api/v1/register": "ลงทะเบียนผู้ดูแลระบบใหม่",
+      "/api/v1/login": "เข้าสู่ระบบสำหรับผู้ดูแลระบบที่มีอยู่แล้ว",
     },
-    {
-      path: "/api/v1/register",
-      method: "POST",
-      description: "เส้นทางสำหรับการลงทะเบียน"
+    config_endpoints: {
+      "/api/v1/config/start": "เริ่มต้น Client",
+      "/api/v1/config/channels/:apiId": "ดึงข้อมูล Channels",
+      "/api/v1/config/stop/:apiId": "หยุด Client",
     },
-    {
-      path: "/api/v1/login",
-      method: "POST",
-      description: "เส้นทางสำหรับการเข้าสู่ระบบ"
-    },
-    {
-      path: "/api/v1/check-auth",
-      method: "GET",
-      description: "ตรวจสอบสถานะการล็อกอิน"
-    },
-    {
-      path: "/api/v1/logout",
-      method: "POST",
-      description: "ออกจากระบบ"
-    },
-    {
-      path: "/api/v1/profile",
-      method: "GET",
-      description: "ดึงข้อมูลส่วนตัวของผู้ใช้"
-    },
-    {
-      path: "/api/v1/profile",
-      method: "PUT",
-      description: "อัพเดทข้อมูลส่วนตัวของผู้ใช้"
-    },
-    {
-      path: "/api/v1",
-      method: "PUT",
-      description: "อัพเดทข้อมูลส่วนตัวของผู้ใช้"
-    },
-    {
-      path: "/api/v1",
-      method: "PUT",
-      description: "Resive group"
-    },
-    {
-      path: "/api/v1",
-      method: "POST",
-      description: "Resive group"
-    },
-    {
-      path: "/api/v1",
-      method: "DELETE",
-      description: "Resive group"
-    },
-    {
-      path: "/api/v1",
-      method: "PUT",
-      description: "Sanding group"
-    },
-    {
-      path: "/api/v1",
-      method: "POST",
-      description: "Sanding group"
-    },
-    {
-      path: "/api/v1",
-      method: "DELETE",
-      description: "Sanding group"
-    },
-    {
-      path: "/api/v1",
-      method: "POST",
-      description: "Forward message"
-    }
-
-  ]
+  });
 };
 
-module.exports = routes; 
+module.exports = { getMainInfo };
