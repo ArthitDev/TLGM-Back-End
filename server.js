@@ -39,36 +39,22 @@ const db = require('./db');
 const { getSandingGroup } = require('./src/controller/SandingGroupController');
 
 app.get('/', (req, res) => {
-  res.json(routes.endpoints);
+  res.json(routes);
 });
 
-// เพิ่ม middleware สำหรับ login routes
-app.use('/api/v1', loginRoutes);
-
-// เริ่ม middleware สำหรับ register routes
-app.use('/api/v1', registerRoutes);
-
-// เริ่ม middleware สำหรับ user routes
-app.use('/api/v1', userRoutes);
-
-// เริ่ม middleware สำหรับ protected routes
-app.use('/api/v1', protectedRoutes);
-
-// เริ่ม middleware สำหรับ logout routes
-app.use('/api/v1', logoutRoutes);
-
-// เริ่ม middleware สำหรับ refresh token routes
-app.use('/api/v1', refreshTokenRoutes);
-
-// เริ่ม middleware สำหรับ profile routes
-app.use('/api/v1', profileRoutes);
-
-app.use('/api/v1', configRoutes);
-
-app.use('/api/v1', ResiveGroupRouters);
-
-
-app.use('/api/v1', SandingGroupRouters);
+// Consolidate route handlers based on the routes.js structure
+app.use('/api/v1', [
+  loginRoutes,
+  registerRoutes,
+  userRoutes,
+  protectedRoutes,
+  logoutRoutes,
+  refreshTokenRoutes,
+  profileRoutes,
+  configRoutes,
+  ResiveGroupRouters,
+  SandingGroupRouters
+]);
 
 app.use('/api/v1', forwardRoutes);
 
