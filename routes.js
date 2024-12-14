@@ -20,7 +20,8 @@ const routes = {
   telegram_group_endpoints: {
     "GET : /api/v1/receive-group": "ดึงข้อมูลกลุ่มรับข้อความ",
     "POST : /api/v1/receive-group/:rg_id": "เพิ่มกลุ่มรับข้อความ",
-    "DELETE : /api/v1/receive-group/:rg_id": "ลบกลุ่มรับข้อความ"
+    "DELETE : /api/v1/receive-group/:rg_id": "ลบกลุ่มรับข้อความ",
+    "POST : /api/v1/receive-group/send-message/:rg_id": "ส่งข้อความไปยังกลุ่มรับข้อความ"
   }
 };
 
