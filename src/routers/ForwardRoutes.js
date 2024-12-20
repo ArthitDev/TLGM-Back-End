@@ -3,7 +3,8 @@ const {
   beginForwarding,
   stopContinuousAutoForward,
   checkForwardingStatus,
-  handleInitialize
+  handleInitialize,
+  getForwardingStatusFromDB
 } = require("../controller/ForwardController");
 const express = require('express');
 const router = express.Router();
@@ -14,5 +15,6 @@ router.post("/begin-forwarding", beginForwarding);
 router.post("/stop-continuous-forward", stopContinuousAutoForward);
 router.post("/initialize", handleInitialize);
 router.post("/check-forwarding-status", checkForwardingStatus);
+router.post("/get-forwarding-status", getForwardingStatusFromDB);
 
 module.exports = router;

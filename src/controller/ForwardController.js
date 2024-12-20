@@ -110,6 +110,21 @@ const startContinuousAutoForward = async (req, res) => {
       return res.status(400).json({ error: 'Client not initialized' });
     }
 
+    // ต่งข้อความ hello world ไปยังทุกกลุ่มปลายทางก่อน
+    for (const destChatId of destinationChatIds) {
+      try {
+        await client.sendMessage(destChatId, { message: 'hello world' });
+        console.log(`Sent initial hello world message to ${destChatId}`);
+        // รอ 1 วินาทีระหว่างการส่งแต่ละกลุ่ม
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (error) {
+        console.error(`Failed to send hello world to ${destChatId}:`, error.message);
+        return res.status(400).json({ 
+          error: `Unable to send messages to group ${destChatId}. Please check permissions.` 
+        });
+      }
+    }
+
     // ตั้งค่า timeout สำหรับการรอ (เช่น 30 วินาที)
     const TIMEOUT = 30000;
     const startTime = Date.now();
@@ -185,6 +200,18 @@ const beginForwarding = async (req, res) => {
       return res.status(400).json({ error: 'Client not initialized' });
     }
 
+    // Add database update before starting forward process
+    try {
+      await db.execute(
+        'INSERT INTO forward (userid, status) VALUES (?, 1) ON DUPLICATE KEY UPDATE status = 1',
+        [userId]
+      );
+      console.log(`Updated forwarding status for user ${userId} to active`);
+    } catch (dbError) {
+      console.error('Database error:', dbError);
+      return res.status(500).json({ error: 'Failed to update forwarding status' });
+    }
+
     const groupCooldowns = await getGroupCooldowns(client, destinationChatIds);
 
     if (interval < 1 || interval > 60) {
@@ -242,6 +269,18 @@ const stopContinuousAutoForward = async (req, res) => {
   try {
     const { userId } = req.body;
     
+    // Update database status to inactive
+    try {
+      await db.execute(
+        'UPDATE forward SET status = 0 WHERE userid = ?',
+        [userId]
+      );
+      console.log(`Updated forwarding status for user ${userId} to inactive`);
+    } catch (dbError) {
+      console.error('Database error:', dbError);
+      // Continue with stopping even if DB update fails
+    }
+
     if (intervalsMap.has(userId)) {
       clearInterval(intervalsMap.get(userId));
       intervalsMap.delete(userId);
@@ -320,10 +359,40 @@ const checkForwardingStatus = async (req, res) => {
   }
 };
 
+const getForwardingStatusFromDB = async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const [rows] = await db.execute(
+      'SELECT status FROM forward WHERE userid = ?',
+      [userId]
+    );
+
+    const status = rows.length > 0 ? rows[0].status : 0;
+
+    res.json({
+      status: status,
+      userId
+    });
+
+  } catch (error) {
+    console.error('Error fetching forwarding status:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch forwarding status',
+      details: error.message 
+    });
+  }
+};
+
 module.exports = {
   handleInitialize,
   startContinuousAutoForward,
   beginForwarding,
   stopContinuousAutoForward,
-  checkForwardingStatus
+  checkForwardingStatus,
+  getForwardingStatusFromDB
 };
