@@ -186,146 +186,168 @@ const startContinuousAutoForward = async (req, res) => {
   }
 };
 
+const processCooldownGroups = async (client, msg, sourceChatId, cooldownGroups) => {
+  try {
+    console.log('\n=== เริ่มตรวจสอบกลุ่มที่ติด Cooldown ===');
+    
+    // สร้างฟังก์ชันสำหรับตรวจสอบและส่งข้อความทันทีเมื่อครบ cooldown
+    const checkAndSendMessage = async (destChatId) => {
+      while (cooldownGroups.has(destChatId)) {
+        const now = Date.now();
+        const cooldownUntil = groupCooldowns.get(destChatId);
+        const timeLeft = cooldownUntil ? Math.ceil((cooldownUntil - now) / 1000) : 0;
+
+        // ถ้าครบ cooldown + 2 วินาที
+        if (!cooldownUntil || now >= cooldownUntil + 2000) {
+          console.log(`\n🕒 กลุ่ม ${destChatId} ครบเวลา cooldown แล้ว`);
+          console.log(`📤 กำลังส่งข้อความไปยังกลุ่ม ${destChatId}...`);
+          
+          const result = await forwardMessage(client, msg, sourceChatId, destChatId);
+          
+          if (result) {
+            console.log(`✅ ส่งสำเร็จไปยังกลุ่ม ${destChatId}`);
+            cooldownGroups.delete(destChatId);
+            return;
+          } else {
+            console.log(`❌ ส่งไม่สำเร็จไปยังกลุ่ม ${destChatId}`);
+            const newCooldown = groupCooldowns.get(destChatId);
+            if (newCooldown) {
+              console.log(`⏳ กลุ่ม ${destChatId} ได้รับ cooldown ใหม่: ${Math.ceil((newCooldown - now) / 1000)} วินาที`);
+              // รอจนครบ cooldown ใหม่แล้วลองอีกครั้ง
+              await new Promise(resolve => setTimeout(resolve, newCooldown - now + 2000));
+            }
+          }
+        } else {
+          // ถ้ายังไม่ครบ cooldown ให้รอจนครบแล้วลองใหม่
+          console.log(`⏳ กลุ่ม ${destChatId} เหลือเวลา cooldown: ${timeLeft} วินาที`);
+          await new Promise(resolve => setTimeout(resolve, cooldownUntil - now + 2000));
+        }
+      }
+    };
+
+    // เริ่มการตรวจสอบและส่งข้อความสำหรับทุกกลุ่มพร้อมกัน
+    console.log(`\n🔄 เริ่มตรวจสอบ ${cooldownGroups.size} กลุ่มที่ติด cooldown`);
+    const checkPromises = Array.from(cooldownGroups).map(destChatId => 
+      checkAndSendMessage(destChatId)
+    );
+
+    // รอให้ทุกกลุ่มทำงานเสร็จ
+    await Promise.all(checkPromises);
+    
+    console.log('\n✨ จบการตรวจสอบกลุ่มที่ติด Cooldown');
+    
+    // ถ้ายังมีกลุ่มที่ไม่สำเร็จ แสดงสถานะ
+    if (cooldownGroups.size > 0) {
+      console.log('\n📊 สรุปกลุ่มที่ยังติด cooldown:');
+      for (const destChatId of cooldownGroups) {
+        const cooldownUntil = groupCooldowns.get(destChatId);
+        const timeLeft = Math.ceil((cooldownUntil - Date.now()) / 1000);
+        console.log(`- กลุ่ม ${destChatId}: เหลือเวลา ${timeLeft} วินาที`);
+      }
+    }
+
+  } catch (error) {
+    console.error('❌ Error processing cooldown groups:', error);
+    console.error('Error details:', error.message);
+  }
+};
+
 const autoForwardMessages = async (userId, sourceChatId, destinationChatIds) => {
   const client = clientsMap.get(userId);
   if (!client) throw new Error('Client not found');
   
   try {
-    console.log(`Starting forward process to ${destinationChatIds.length} groups`);
+    console.log('\n=== เริ่มกระบวนการ Forward ===');
+    console.log(`จำนวนกลุ่มทั้งหมด: ${destinationChatIds.length} กลุ่ม`);
 
     const chunkSize = 20;
     const chunks = [];
     const cooldownGroups = new Set();
+    
+    // ดึงข้อความที่เก็บไว้จาก messagesMap
+    const storedMessages = messagesMap.get(userId);
+    if (!storedMessages || storedMessages.length === 0) {
+      console.log('❌ ไม่พบข้อความที่เก็บไว้ใน messagesMap');
+      return false;
+    }
+    let lastMessage = storedMessages[0];
+    console.log(`📝 ข้อความที่เก็บไว้: ID ${lastMessage.id}`);
+    console.log(`📄 เนื้อหา: ${lastMessage.message?.substring(0, 50)}...`);
 
     for (let i = 0; i < destinationChatIds.length; i += chunkSize) {
       chunks.push(destinationChatIds.slice(i, i + chunkSize));
     }
 
     let currentBatchSize = Math.min(userBatchSizesMap.get(userId) || 3, 3);
-    console.log(`แบ่งการส่งเป็น ${chunks.length} chunks, batch size: ${currentBatchSize}`);
+    console.log(`\n🔄 แบ่งการส่งเป็น ${chunks.length} chunks (${chunkSize} กลุ่ม/chunk)`);
+    console.log(`📦 Batch size: ${currentBatchSize} chunks/รอบ`);
 
     // ส่งข้อความไปยังกลุ่มที่ไม่ติด cooldown
     for (let i = 0; i < chunks.length; i += currentBatchSize) {
+      console.log(`\n=== รอบที่ ${Math.floor(i/currentBatchSize) + 1} ===`);
+      
       // ดึงข้อความล่าสุดก่อนส่งในแต่ละรอบ
+      console.log('🔍 ตรวจสอบข้อความใหม่...');
       const latestMessages = await checkNewMessages(client, sourceChatId);
-      if (!latestMessages || latestMessages.length === 0) {
-        console.log('ไม่พบข้อความใหม่สำหรับการส่งในรอบนี้');
-        continue;
+      
+      // อัพเดท lastMessage ถ้าพบข้อความใหม่
+      if (latestMessages?.length > 0) {
+        lastMessage = latestMessages[0];
+        messagesMap.set(userId, [lastMessage]);
+        console.log(`✨ พบข้อความใหม่ ID: ${lastMessage.id}`);
+        console.log(`📄 เนื้อหา: ${lastMessage.message?.substring(0, 50)}...`);
+      } else {
+        console.log(`♻️ ใช้ข้อความเดิม ID: ${lastMessage.id}`);
       }
-      const msg = latestMessages[0]; // ใช้ข้อความล่าสุด
 
-      console.log(`Processing chunk ${i + 1}/${chunks.length} with message ID: ${msg.id}`);
       const currentBatch = chunks.slice(i, i + currentBatchSize);
+      const totalGroupsInBatch = currentBatch.reduce((sum, chunk) => sum + chunk.length, 0);
+      
+      console.log(`\n📤 กำลังส่งไปยัง ${totalGroupsInBatch} กลุ่ม...`);
       
       const results = await Promise.all(
         currentBatch.flatMap(chunk =>
           chunk.map(async destChatId => {
-            const result = await forwardMessage(client, msg, sourceChatId, destChatId);
+            const result = await forwardMessage(client, lastMessage, sourceChatId, destChatId);
             if (!result) {
               const cooldownUntil = groupCooldowns.get(destChatId);
               if (cooldownUntil) {
                 cooldownGroups.add(destChatId);
+                const timeLeft = Math.ceil((cooldownUntil - Date.now()) / 1000);
+                console.log(`⏳ กลุ่ม ${destChatId} ติด cooldown อีก ${timeLeft} วินาที`);
               }
+            } else {
+              console.log(`✅ ส่งสำเร็จไปยังกลุ่ม ${destChatId}`);
             }
             return result;
           })
         )
       );
 
+      const successCount = results.filter(r => r).length;
       const failedCount = results.filter(r => !r).length;
-      if (failedCount > 0) {
-        console.log(`${failedCount} groups failed in this batch`);
-      }
+      
+      console.log(`\n📊 สรุปผลการส่งรอบนี้:`);
+      console.log(`✅ สำเร็จ: ${successCount} กลุ่ม`);
+      console.log(`❌ ไม่สำเร็จ: ${failedCount} กลุ่ม`);
 
-      // พักระหว่าง batch
       if (i + currentBatchSize < chunks.length) {
         const delayTime = 5000;
-        console.log(`Waiting ${delayTime/1000} seconds before next batch...`);
+        console.log(`\n⏱️ รอ ${delayTime/1000} วินาที ก่อนส่งรอบถัดไป...`);
         await new Promise(resolve => setTimeout(resolve, delayTime));
       }
     }
 
-    // จัดการกลุ่มที่ติด cooldown แยก
+    // จัดการกลุ่มที่ติด cooldown
     if (cooldownGroups.size > 0) {
-      console.log(`มี ${cooldownGroups.size} กลุ่มที่ติด cooldown, เริ่มการส่งแยก`);
-      
-      const processCooldownGroups = async (client, msg, sourceChatId, cooldownGroups) => {
-        try {
-          const now = Date.now();
-          const readyGroups = [];
-
-          // ตรวจสอบและแสดงสถานะของทุกกลุ่ม
-          for (const destChatId of cooldownGroups) {
-            const cooldownUntil = groupCooldowns.get(destChatId);
-            const timeLeft = cooldownUntil ? Math.ceil((cooldownUntil - now) / 1000) : 0;
-            
-            if (!cooldownUntil || now >= cooldownUntil + 2000) {
-              console.log(`กลุ่ม ${destChatId} พร้อมส่ง (cooldown หมดแล้ว + 2 วินาที)`);
-              readyGroups.push(destChatId);
-            } else {
-              console.log(`กลุ่ม ${destChatId} ยังไม่พร้อมส่ง: เหลือเวลา ${timeLeft} วินาที + 2 วินาที`);
-            }
-          }
-
-          // ถ้ามีกลุ่มที่พร้อมส่ง
-          if (readyGroups.length > 0) {
-            console.log(`เริ่มส่งข้อความไปยัง ${readyGroups.length} กลุ่มที่พร้อมส่ง`);
-            
-            for (const destChatId of readyGroups) {
-              console.log(`กำลังส่งข้อความไปยังกลุ่ม ${destChatId}`);
-              const result = await forwardMessage(client, msg, sourceChatId, destChatId);
-              
-              if (result) {
-                console.log(`✓ ส่งสำเร็จไปยังกลุ่ม ${destChatId}`);
-                cooldownGroups.delete(destChatId);
-              } else {
-                console.log(`✗ ส่งไม่สำเร็จไปยังกลุ่ม ${destChatId}`);
-                // ถ้าส่งไม่สำเร็จ ตรวจสอบ cooldown ใหม่
-                const newCooldown = groupCooldowns.get(destChatId);
-                if (newCooldown) {
-                  console.log(`  → กลุ่ม ${destChatId} ได้รับ cooldown ใหม่: ${Math.ceil((newCooldown - now) / 1000)} วินาที`);
-                }
-              }
-              
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-          }
-
-          // ถ้ายังมีกลุ่มที่ติด cooldown
-          if (cooldownGroups.size > 0) {
-            const cooldownTimes = Array.from(cooldownGroups).map(id => {
-              const cooldown = groupCooldowns.get(id) || 0;
-              return { id, time: cooldown };
-            });
-
-            // เรียงลำดับตามเวลา cooldown
-            cooldownTimes.sort((a, b) => a.time - b.time);
-            
-            const nextCooldown = cooldownTimes[0].time;
-            const nextCheck = nextCooldown - now + 2000;
-            
-            console.log('\nสรุปสถานะ cooldown ที่เหลือ:');
-            cooldownTimes.forEach(({ id, time }) => {
-              const timeLeft = Math.ceil((time - now) / 1000);
-              console.log(`- กลุ่ม ${id}: เหลือ ${timeLeft} วินาที`);
-            });
-            console.log(`\nจะตรวจสอบอีกครั้งใน ${Math.ceil(nextCheck/1000)} วินาที`);
-
-            await new Promise(resolve => setTimeout(resolve, nextCheck));
-            return processCooldownGroups(client, msg, sourceChatId, cooldownGroups);
-          }
-        } catch (error) {
-          console.error('Error processing cooldown groups:', error);
-          console.error('Error details:', error.message);
-        }
-      };
-
-      await processCooldownGroups(client, msg, sourceChatId, cooldownGroups);
+      console.log(`\n⏳ มี ${cooldownGroups.size} กลุ่มที่ติด cooldown, เริ่มการส่งแยก`);
+      await processCooldownGroups(client, lastMessage, sourceChatId, cooldownGroups);
     }
 
+    console.log('\n=== จบกระบวนการ Forward ===\n');
     return true;
   } catch (error) {
-    console.error('Error in auto forwarding:', error);
+    console.error('❌ Error in auto forwarding:', error);
     throw error;
   }
 };
@@ -363,14 +385,14 @@ const beginForwarding = async (req, res) => {
       });
     }
 
-    // เก็บเพียงข้อความล่าสุด 1 ข้อความ
-    const initialMessages = await checkNewMessages(client, sourceChatId);
+    // เก็บข้อความเริ่มต้น
+    const initialMessages = await client.getMessages(sourceChatId, { limit: 1 });
     console.log(`Found ${initialMessages.length} message to forward repeatedly`);
     
     if (initialMessages.length > 0) {
-      // เก็บเพียงข้อความเดียว
+      // เก็บข้อความเริ่มต้นใน messagesMap
       messagesMap.set(userId, [initialMessages[0]]);
-      console.log('Stored single message for repeated forwarding');
+      console.log('Stored initial message for repeated forwarding:', initialMessages[0].id);
     } else {
       console.log('No message found to forward');
       return res.status(400).json({
@@ -393,6 +415,9 @@ const beginForwarding = async (req, res) => {
 
     intervalsMap.set(userId, newInterval);
     console.log(`Set new interval to forward every ${interval} minutes`);
+
+    // เริ่มส่งข้อความครั้งแรกทันที
+    autoForwardMessages(userId, sourceChatId, destinationChatIds);
 
     res.json({
       success: true,
