@@ -8,10 +8,12 @@ const sessions = {}; // เก็บ session string ตาม apiId
 
 const getChannels = async (req, res) => {
     const { apiId } = req.params;
-    const clientData = clients[apiId]; // ตรวจสอบว่า Client ถูกสร้างขึ้นแล้ว
+    const { userid } = req.body; // เพิ่ม userid
+    const clientKey = `${apiId}_${userid}`; // สร้าง clientKey
+    const clientData = clients[clientKey];
 
     if (!clientData) {
-        return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID นี้" });
+        return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID และ USER_ID นี้" });
     }
 
     try {
@@ -19,16 +21,16 @@ const getChannels = async (req, res) => {
         for await (const dialog of clientData.client.iterDialogs()) {
             if (dialog.isChannel || dialog.isGroup) {
                 dialogs.push({
-                    id: dialog.id,          // ID ของ Channel หรือ Group
-                    title: dialog.title,    // ชื่อ Channel หรือ Group
-                    type: dialog.isChannel ? 'channel' : 'group' // ประเภท
+                    id: dialog.id,
+                    title: dialog.title,
+                    type: dialog.isChannel ? 'channel' : 'group'
                 });
             }
         }
 
         res.json({
             message: "ดึงข้อมูล Channels และ Groups สำเร็จ",
-            channels: dialogs, // ส่งกลับรายการ Channels
+            channels: dialogs,
         });
     } catch (error) {
         console.error("Error in getChannels:", error);
@@ -46,30 +48,60 @@ const formatPhoneNumber = (phoneNumber) => {
 
   
 // สร้าง Telegram Client พร้อมรองรับ session string
-const createClient = async (apiId, apiHash, sessionString = "") => {
-    const session = new StringSession(sessionString); // ใช้ session string (hash)
-    const client = new TelegramClient(session, parseInt(apiId), apiHash, {
+const createClient = async (apiId, apiHash, sessionString = "", userid) => {
+    // สร้าง session string ที่เป็นเอกลักษณ์สำหรับแต่ละ user
+    const uniqueSession = new StringSession(sessionString);
+    const client = new TelegramClient(uniqueSession, parseInt(apiId), apiHash, {
         connectionRetries: 5,
     });
-    await client.connect(); // เชื่อมต่อกับ Telegram API
-    return { client, session };
+    await client.connect();
+    return { client, session: uniqueSession };
 };
 
 const startClient = async (req, res) => {
-    const { apiId, apiHash } = req.body;
+    const { apiId, apiHash, userid } = req.body;
 
-    if (!apiId || !apiHash) {
-        return res.status(400).json({ error: "API_ID และ API_HASH เป็นสิ่งจำเป็น" });
+    if (!apiId || !apiHash || !userid) {
+        return res.status(400).json({ error: "API_ID, API_HASH และ USER_ID เป็นสิ่งจำเป็น" });
     }
 
     try {
-        const sessionString = sessions[apiId] || ""; // ใช้ session string ที่บันทึกไว้ หากมี
-        const { client, session } = await createClient(apiId, apiHash, sessionString); // สร้าง Client
-        clients[apiId] = { client, apiHash }; // เก็บ client และ apiHash
-        sessions[apiId] = session.save(); // บันทึก session string
-        res.json({ message: "Client เริ่มทำงานแล้ว", apiId, sessionHash: sessions[apiId] });
+        // ตรวจสอบ session ที่มีอยู่ในฐานข้อมูล
+        const [rows] = await db.execute(
+            'SELECT session_hash, telegram_auth FROM users WHERE userid = ?',
+            [userid]
+        );
+
+        const clientKey = `${apiId}_${userid}`;
+        let sessionString = "";
+
+        // ถ้ามี session และ verified แล้ว ให้ใช้ session เดิม
+        if (rows.length > 0 && rows[0].session_hash && rows[0].telegram_auth === 1) {
+            sessionString = rows[0].session_hash;
+            console.log('Using existing session for user:', userid);
+        }
+
+        // สร้าง client ใหม่หรือใช้ session ที่มีอยู่
+        const { client, session } = await createClient(apiId, apiHash, sessionString, userid);
+        clients[clientKey] = { client, apiHash };
+        sessions[clientKey] = session.save();
+
+        // ตรวจสอบว่า client authenticated หรือไม่
+        const isAuthorized = await client.isUserAuthorized();
+
+        res.json({ 
+            message: "Client เริ่มทำงานแล้ว", 
+            apiId,
+            sessionHash: sessions[clientKey],
+            isAuthorized, // ส่งสถานะการ authenticate กลับไป
+            needsVerification: !isAuthorized // บอกว่าต้อง verify หรือไม่
+        });
     } catch (error) {
-        res.status(500).json({ error: "เกิดข้อผิดพลาดในการเริ่มต้น Client", details: error.message });
+        console.error("Error in startClient:", error);
+        res.status(500).json({ 
+            error: "เกิดข้อผิดพลาดในการเริ่มต้น Client", 
+            details: error.message 
+        });
     }
 };
 
@@ -79,17 +111,14 @@ const stopClient = async (req, res) => {
     const { apiId } = req.params;
     const { userid } = req.body;
 
-    // Log the userid received from the front-end
-    console.log('Received userid from front-end:', userid);
-
-    const clientData = clients[apiId];
+    const clientKey = `${apiId}_${userid}`;
+    const clientData = clients[clientKey];
 
     if (!clientData) {
-        return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID นี้" });
+        return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID และ USER_ID นี้" });
     }
 
     try {
-        // Update both telegram_auth and session_hash in database
         const [result] = await db.execute(
             'UPDATE users SET telegram_auth = 0, session_hash = NULL WHERE userid = ?',
             [userid]
@@ -101,8 +130,8 @@ const stopClient = async (req, res) => {
         }
 
         await clientData.client.disconnect();
-        delete clients[apiId];
-        delete sessions[apiId];
+        delete clients[clientKey];
+        delete sessions[clientKey];
 
         res.json({ message: "Client หยุดทำงานแล้ว", apiId });
     } catch (error) {
@@ -111,87 +140,88 @@ const stopClient = async (req, res) => {
 };
 
 const sendPhoneNumber = async (req, res) => {
-    const { apiId, phoneNumber } = req.body;
-    const clientData = clients[apiId];
+    const { apiId, phoneNumber, userid } = req.body; // เพิ่ม userid
+    const clientKey = `${apiId}_${userid}`; // สร้าง clientKey
+    const clientData = clients[clientKey];
   
     if (!clientData) {
-      return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID นี้" });
+        return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID และ USER_ID นี้" });
     }
   
     try {
-      const formattedPhoneNumber = formatPhoneNumber(phoneNumber); // แปลงหมายเลขโทรศัพท์
-      const result = await clientData.client.invoke(new Api.auth.SendCode({
-        phoneNumber: formattedPhoneNumber,
-        apiId: parseInt(apiId),
-        apiHash: clientData.apiHash,
-        settings: new Api.CodeSettings({
-          allowFlashcall: false,
-          currentNumber: true,
-          allowAppHash: false,
-        }),
-      }));
+        const formattedPhoneNumber = formatPhoneNumber(phoneNumber);
+        const result = await clientData.client.invoke(new Api.auth.SendCode({
+            phoneNumber: formattedPhoneNumber,
+            apiId: parseInt(apiId),
+            apiHash: clientData.apiHash,
+            settings: new Api.CodeSettings({
+                allowFlashcall: false,
+                currentNumber: true,
+                allowAppHash: false,
+            }),
+        }));
   
-      res.json({ message: "ส่งรหัส OTP แล้ว", phoneCodeHash: result.phoneCodeHash });
+        res.json({ message: "ส่งรหัส OTP แล้ว", phoneCodeHash: result.phoneCodeHash });
     } catch (error) {
-      res.status(500).json({ error: "เกิดข้อผิดพลาดในการส่งรหัส OTP", details: error.message });
+        res.status(500).json({ error: "เกิดข้อผิดพลาดในการส่งรหัส OTP", details: error.message });
     }
-  };
-  
+};
 
 
 // เพิ่มฟังก์ชันใหม่สำหรับยืนยัน OTP
 const verifyCode = async (req, res) => {
-  const { apiId, phoneNumber, code, phoneCodeHash, userid } = req.body;
+    const { apiId, phoneNumber, code, phoneCodeHash, userid } = req.body;
 
-  if (!apiId || !phoneNumber || !code || !phoneCodeHash || !userid) {
-      return res.status(400).json({
-          error: "ข้อมูลไม่ครบถ้วน",
-          details: "กรุณาระบุ apiId, phoneNumber, code, phoneCodeHash และ userid",
-      });
-  }
+    if (!apiId || !phoneNumber || !code || !phoneCodeHash || !userid) {
+        return res.status(400).json({
+            error: "ข้อมูลไม่ครบถ้วน",
+            details: "กรุณาระบุ apiId, phoneNumber, code, phoneCodeHash และ userid",
+        });
+    }
 
-  const clientData = clients[apiId];
+    const clientKey = `${apiId}_${userid}`; // สร้าง clientKey
+    const clientData = clients[clientKey];
 
-  if (!clientData) {
-      return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID นี้" });
-  }
+    if (!clientData) {
+        return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID และ USER_ID นี้" });
+    }
 
-  try {
-      const formattedPhoneNumber = formatPhoneNumber(phoneNumber);
-      console.log('Sending to Telegram API:', {
-          phoneNumber: formattedPhoneNumber,
-          phoneCode: code,
-          phoneCodeHash: phoneCodeHash,
-      });
+    try {
+        const formattedPhoneNumber = formatPhoneNumber(phoneNumber);
+        console.log('Sending to Telegram API:', {
+            phoneNumber: formattedPhoneNumber,
+            phoneCode: code,
+            phoneCodeHash: phoneCodeHash,
+        });
 
-      const { client } = clientData;
-      await client.invoke(new Api.auth.SignIn({
-          phoneNumber: formattedPhoneNumber,
-          phoneCode: code,
-          phoneCodeHash: phoneCodeHash,
-      }));
+        const { client } = clientData;
+        await client.invoke(new Api.auth.SignIn({
+            phoneNumber: formattedPhoneNumber,
+            phoneCode: code,
+            phoneCodeHash: phoneCodeHash,
+        }));
 
-      sessions[apiId] = client.session.save();
-      const sessionHash = sessions[apiId];
+        sessions[clientKey] = client.session.save(); // ใช้ clientKey แทน apiId
+        const sessionHash = sessions[clientKey];
 
-      console.log('Updating Database...');
-      const [result] = await db.execute(
-          'UPDATE users SET session_hash = ?, telegram_auth = 1 WHERE userid = ?',
-          [sessionHash, userid]
-      );
+        console.log('Updating Database...');
+        const [result] = await db.execute(
+            'UPDATE users SET session_hash = ?, telegram_auth = 1 WHERE userid = ?',
+            [sessionHash, userid]
+        );
 
-      console.log('Database Update Result:', result);
+        console.log('Database Update Result:', result);
 
-      if (result.affectedRows === 0) {
-          console.error('Database Update Failed: No rows affected.');
-          return res.status(404).json({ error: 'User not found or update failed.' });
-      }
+        if (result.affectedRows === 0) {
+            console.error('Database Update Failed: No rows affected.');
+            return res.status(404).json({ error: 'User not found or update failed.' });
+        }
 
-      res.json({ message: "ยืนยันรหัส OTP สำเร็จ", apiId, sessionHash });
-  } catch (error) {
-      console.error("Error in verifyCode:", error);
-      res.status(500).json({ error: "Telegram API failed", details: error.message });
-  }
+        res.json({ message: "ยืนยันรหัส OTP สำเร็จ", apiId, sessionHash });
+    } catch (error) {
+        console.error("Error in verifyCode:", error);
+        res.status(500).json({ error: "Telegram API failed", details: error.message });
+    }
 };
 
 
