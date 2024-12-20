@@ -144,7 +144,7 @@ const getChannels = async (req, res) => {
     }
 
     try {
-        // Fetch user credentials from the database
+        // ดึงข้อมูล user จาก database
         const [rows] = await db.execute(
             'SELECT api_id, api_hash, session_hash FROM users WHERE userid = ?',
             [userId]
@@ -155,22 +155,23 @@ const getChannels = async (req, res) => {
         }
 
         const { api_id, api_hash, session_hash } = rows[0];
+        const clientKey = `${api_id}_${userId}`; // สร้าง clientKey
 
-        if (!clients[api_id]) {
+        if (!clients[clientKey]) {
             try {
                 const session = new StringSession(session_hash || '');
                 const client = new TelegramClient(session, parseInt(api_id), api_hash, {
                     connectionRetries: 5,
                 });
                 await client.start();
-                clients[api_id] = client;
+                clients[clientKey] = client;
             } catch (error) {
                 return res.status(500).json({ error: 'Failed to initialize Telegram client.' });
             }
         }
 
         const dialogs = [];
-        for await (const dialog of clients[api_id].iterDialogs()) {
+        for await (const dialog of clients[clientKey].iterDialogs()) {
             if (dialog.isChannel || dialog.isGroup) {
                 dialogs.push({
                     id: dialog.id,
