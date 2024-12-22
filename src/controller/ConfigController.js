@@ -2,14 +2,38 @@ const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const { Api } = require("telegram");
 const db = require('../../db');
-const clients = {}; // เก็บ Clients ตาม apiId
+const clients = {}; // { clientKey: { client, apiHash, createdAt, lastUsed } }
 const sessions = {}; // เก็บ session string ตาม apiId
 
+// เพิ่ม constants สำหรับการจัดการ lifetime
+const CLIENT_TIMEOUT = 1000 * 60 * 60; // 1 hour in milliseconds
+const CLEANUP_INTERVAL = 1000 * 60 * 15; // run cleanup every 15 minutes
+
+// เพิ่ม cleanup routine
+const cleanupInactiveClients = async () => {
+    const now = Date.now();
+    for (const [clientKey, clientData] of Object.entries(clients)) {
+        // ถ้า client ไม่ได้ใช้งานเกิน CLIENT_TIMEOUT
+        if (now - clientData.lastUsed > CLIENT_TIMEOUT) {
+            console.log(`Cleaning up inactive client: ${clientKey}`);
+            try {
+                await clientData.client.disconnect();
+                delete clients[clientKey];
+                delete sessions[clientKey];
+            } catch (error) {
+                console.error(`Error cleaning up client ${clientKey}:`, error);
+            }
+        }
+    }
+};
+
+// เริ่ม cleanup routine
+setInterval(cleanupInactiveClients, CLEANUP_INTERVAL);
 
 const getChannels = async (req, res) => {
     const { apiId } = req.params;
-    const { userid } = req.body; // เพิ่ม userid
-    const clientKey = `${apiId}_${userid}`; // สร้าง clientKey
+    const { userid } = req.body;
+    const clientKey = `${apiId}_${userid}`;
     const clientData = clients[clientKey];
 
     if (!clientData) {
@@ -17,6 +41,9 @@ const getChannels = async (req, res) => {
     }
 
     try {
+        // อัพเดท lastUsed timestamp
+        clientData.lastUsed = Date.now();
+        
         const dialogs = [];
         for await (const dialog of clientData.client.iterDialogs()) {
             if (dialog.isChannel || dialog.isGroup) {
@@ -66,13 +93,30 @@ const startClient = async (req, res) => {
     }
 
     try {
+        const clientKey = `${apiId}_${userid}`;
+        const now = Date.now();
+        
+        // ตรวจสอบ client ที่มีอยู่
+        if (clients[clientKey] && clients[clientKey].client.connected) {
+            // อัพเดท lastUsed timestamp
+            clients[clientKey].lastUsed = now;
+            return res.json({ 
+                message: "Client กำลังทำงานอยู่แล้ว",
+                apiId,
+                sessionHash: sessions[clientKey],
+                isAuthorized: await clients[clientKey].client.isUserAuthorized(),
+                needsVerification: false,
+                createdAt: clients[clientKey].createdAt,
+                lastUsed: clients[clientKey].lastUsed
+            });
+        }
+
         // ตรวจสอบ session ที่มีอยู่ในฐานข้อมูล
         const [rows] = await db.execute(
             'SELECT session_hash, telegram_auth FROM users WHERE userid = ?',
             [userid]
         );
 
-        const clientKey = `${apiId}_${userid}`;
         let sessionString = "";
 
         // ถ้ามี session และ verified แล้ว ให้ใช้ session เดิม
@@ -83,7 +127,12 @@ const startClient = async (req, res) => {
 
         // สร้าง client ใหม่หรือใช้ session ที่มีอยู่
         const { client, session } = await createClient(apiId, apiHash, sessionString, userid);
-        clients[clientKey] = { client, apiHash };
+        clients[clientKey] = { 
+            client, 
+            apiHash,
+            createdAt: now,
+            lastUsed: now
+        };
         sessions[clientKey] = session.save();
 
         // ตรวจสอบว่า client authenticated หรือไม่
@@ -93,8 +142,10 @@ const startClient = async (req, res) => {
             message: "Client เริ่มทำงานแล้ว", 
             apiId,
             sessionHash: sessions[clientKey],
-            isAuthorized, // ส่งสถานะการ authenticate กลับไป
-            needsVerification: !isAuthorized // บอกว่าต้อง verify หรือไม่
+            isAuthorized,
+            needsVerification: !isAuthorized,
+            createdAt: now,
+            lastUsed: now
         });
     } catch (error) {
         console.error("Error in startClient:", error);
@@ -119,6 +170,9 @@ const stopClient = async (req, res) => {
     }
 
     try {
+        // อัพเดท lastUsed timestamp ก่อนที่จะหยุด client
+        clientData.lastUsed = Date.now();
+
         const [result] = await db.execute(
             'UPDATE users SET telegram_auth = 0, session_hash = NULL WHERE userid = ?',
             [userid]
@@ -140,8 +194,8 @@ const stopClient = async (req, res) => {
 };
 
 const sendPhoneNumber = async (req, res) => {
-    const { apiId, phoneNumber, userid } = req.body; // เพิ่ม userid
-    const clientKey = `${apiId}_${userid}`; // สร้าง clientKey
+    const { apiId, phoneNumber, userid } = req.body;
+    const clientKey = `${apiId}_${userid}`;
     const clientData = clients[clientKey];
   
     if (!clientData) {
@@ -149,6 +203,9 @@ const sendPhoneNumber = async (req, res) => {
     }
   
     try {
+        // อัพเดท lastUsed timestamp
+        clientData.lastUsed = Date.now();
+
         const formattedPhoneNumber = formatPhoneNumber(phoneNumber);
         const result = await clientData.client.invoke(new Api.auth.SendCode({
             phoneNumber: formattedPhoneNumber,
@@ -179,7 +236,7 @@ const verifyCode = async (req, res) => {
         });
     }
 
-    const clientKey = `${apiId}_${userid}`; // สร้าง clientKey
+    const clientKey = `${apiId}_${userid}`;
     const clientData = clients[clientKey];
 
     if (!clientData) {
@@ -187,6 +244,9 @@ const verifyCode = async (req, res) => {
     }
 
     try {
+        // อัพเดท lastUsed timestamp
+        clientData.lastUsed = Date.now();
+
         const formattedPhoneNumber = formatPhoneNumber(phoneNumber);
         console.log('Sending to Telegram API:', {
             phoneNumber: formattedPhoneNumber,

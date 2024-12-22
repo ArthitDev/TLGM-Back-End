@@ -2,7 +2,10 @@ const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const db = require('../../db');
 
-const clientsMap = new Map();
+const CLIENT_TIMEOUT = 1000 * 60 * 60; // 1 hour in milliseconds
+const CLEANUP_INTERVAL = 1000 * 60 * 15; // run cleanup every 15 minutes
+
+const clientsMap = new Map(); // Map<userId, { client, createdAt, lastUsed }>
 const intervalsMap = new Map();
 const messagesMap = new Map();
 const userBatchSizesMap = new Map();
@@ -25,7 +28,14 @@ const initializeClient = async (userId) => {
     );
     
     await client.connect();
-    clientsMap.set(userId, client);
+    
+    // เก็บข้อมูล timestamp
+    clientsMap.set(userId, {
+      client,
+      createdAt: Date.now(),
+      lastUsed: Date.now()
+    });
+    
     return client;
   } catch (error) {
     console.error('Error initializing client:', error);
@@ -119,6 +129,14 @@ const getGroupCooldowns = async (client, chatIds) => {
 const startContinuousAutoForward = async (req, res) => {
   try {
     const { userId, sourceChatId, destinationChatIds } = req.body;
+    const clientData = clientsMap.get(userId);
+    
+    if (!clientData) {
+      return res.status(400).json({ error: 'Client not initialized' });
+    }
+
+    // อัพเดท lastUsed timestamp
+    clientData.lastUsed = Date.now();
     
     if (!userId || !sourceChatId || !Array.isArray(destinationChatIds)) {
       return res.status(400).json({
@@ -126,7 +144,7 @@ const startContinuousAutoForward = async (req, res) => {
       });
     }
 
-    const client = clientsMap.get(userId);
+    const client = clientData.client;
     if (!client) {
       return res.status(400).json({ error: 'Client not initialized' });
     }
@@ -253,10 +271,13 @@ const processCooldownGroups = async (client, msg, sourceChatId, cooldownGroups) 
 };
 
 const autoForwardMessages = async (userId, sourceChatId, destinationChatIds) => {
-  const client = clientsMap.get(userId);
-  if (!client) throw new Error('Client not found');
+  const clientData = clientsMap.get(userId);
+  if (!clientData) throw new Error('Client not found');
   
   try {
+    // อัพเดท lastUsed timestamp
+    clientData.lastUsed = Date.now();
+    
     console.log('\n=== เริ่มกระบวนการ Forward ===');
     console.log(`จำนวนกลุ่มทั้งหมด: ${destinationChatIds.length} กลุ่ม`);
 
@@ -288,7 +309,7 @@ const autoForwardMessages = async (userId, sourceChatId, destinationChatIds) => 
       
       // ดึงข้อความล่าสุดก่อนส่งในแต่ละรอบ
       console.log('🔍 ตรวจสอบข้อความใหม่...');
-      const latestMessages = await checkNewMessages(client, sourceChatId);
+      const latestMessages = await checkNewMessages(clientData.client, sourceChatId);
       
       // อัพเดท lastMessage ถ้าพบข้อความใหม่
       if (latestMessages?.length > 0) {
@@ -308,7 +329,7 @@ const autoForwardMessages = async (userId, sourceChatId, destinationChatIds) => 
       const results = await Promise.all(
         currentBatch.flatMap(chunk =>
           chunk.map(async destChatId => {
-            const result = await forwardMessage(client, lastMessage, sourceChatId, destChatId);
+            const result = await forwardMessage(clientData.client, lastMessage, sourceChatId, destChatId);
             if (!result) {
               const cooldownUntil = groupCooldowns.get(destChatId);
               if (cooldownUntil) {
@@ -341,7 +362,7 @@ const autoForwardMessages = async (userId, sourceChatId, destinationChatIds) => 
     // จัดการกลุ่มที่ติด cooldown
     if (cooldownGroups.size > 0) {
       console.log(`\n⏳ มี ${cooldownGroups.size} กลุ่มที่ติด cooldown, เริ่มการส่งแยก`);
-      await processCooldownGroups(client, lastMessage, sourceChatId, cooldownGroups);
+      await processCooldownGroups(clientData.client, lastMessage, sourceChatId, cooldownGroups);
     }
 
     console.log('\n=== จบกระบวนการ Forward ===\n');
@@ -360,24 +381,42 @@ const beginForwarding = async (req, res) => {
   try {
     const { userId, sourceChatId, destinationChatIds, interval = 5 } = req.body;
     
-    const client = clientsMap.get(userId);
-    if (!client) {
+    const clientData = clientsMap.get(userId);
+    if (!clientData) {
       return res.status(400).json({ error: 'Client not initialized' });
     }
 
-    // Add database update before starting forward process
+    // อัพเดท lastUsed timestamp
+    clientData.lastUsed = Date.now();
+
+    // Check if record exists first
     try {
-      await db.execute(
-        'INSERT INTO forward (userid, status) VALUES (?, 1) ON DUPLICATE KEY UPDATE status = 1',
+      const [rows] = await db.execute(
+        'SELECT userid FROM forward WHERE userid = ?',
         [userId]
       );
-      console.log(`Updated forwarding status for user ${userId} to active`);
+
+      if (rows.length === 0) {
+        // Insert new record if doesn't exist
+        await db.execute(
+          'INSERT INTO forward (userid, status) VALUES (?, 1)',
+          [userId]
+        );
+        console.log(`Created new forwarding record for user ${userId}`);
+      } else {
+        // Update existing record
+        await db.execute(
+          'UPDATE forward SET status = 1 WHERE userid = ?',
+          [userId]
+        );
+        console.log(`Updated forwarding status for user ${userId} to active`);
+      }
     } catch (dbError) {
       console.error('Database error:', dbError);
       return res.status(500).json({ error: 'Failed to update forwarding status' });
     }
 
-    const groupCooldowns = await getGroupCooldowns(client, destinationChatIds);
+    const groupCooldowns = await getGroupCooldowns(clientData.client, destinationChatIds);
 
     if (interval < 1 || interval > 60) {
       return res.status(400).json({
@@ -386,7 +425,7 @@ const beginForwarding = async (req, res) => {
     }
 
     // เก็บข้อความเริ่มต้น
-    const initialMessages = await client.getMessages(sourceChatId, { limit: 1 });
+    const initialMessages = await clientData.client.getMessages(sourceChatId, { limit: 1 });
     console.log(`Found ${initialMessages.length} message to forward repeatedly`);
     
     if (initialMessages.length > 0) {
@@ -437,6 +476,18 @@ const stopContinuousAutoForward = async (req, res) => {
   try {
     const { userId } = req.body;
     
+    const clientData = clientsMap.get(userId);
+    if (clientData) {
+      // อัพเดท lastUsed timestamp ก่อนที่จะหยุด
+      clientData.lastUsed = Date.now();
+      
+      try {
+        await clientData.client.disconnect();
+      } catch (disconnectError) {
+        console.error('Error disconnecting client:', disconnectError);
+      }
+    }
+
     // Update database status to inactive
     try {
       await db.execute(
@@ -446,27 +497,22 @@ const stopContinuousAutoForward = async (req, res) => {
       console.log(`Updated forwarding status for user ${userId} to inactive`);
     } catch (dbError) {
       console.error('Database error:', dbError);
-      // Continue with stopping even if DB update fails
     }
 
+    // Cleanup all maps
     if (intervalsMap.has(userId)) {
       clearInterval(intervalsMap.get(userId));
       intervalsMap.delete(userId);
-      clientsMap.delete(userId);
-      messagesMap.delete(userId);
-      userBatchSizesMap.delete(userId);
-      console.log(`Auto-forward stopped for user ${userId}`);
-      res.json({ 
-        success: true, 
-        message: 'Auto-forward stopped successfully' 
-      });
-    } else {
-      console.log(`No auto-forward was running for user ${userId}`);
-      res.json({ 
-        success: true, 
-        message: 'No auto-forward was running' 
-      });
     }
+    clientsMap.delete(userId);
+    messagesMap.delete(userId);
+    userBatchSizesMap.delete(userId);
+
+    console.log(`Auto-forward stopped for user ${userId}`);
+    res.json({ 
+      success: true, 
+      message: 'Auto-forward stopped successfully' 
+    });
   } catch (error) {
     console.error('Error stopping auto-forward:', error);
     res.status(500).json({
@@ -508,15 +554,25 @@ const checkForwardingStatus = async (req, res) => {
       return res.status(400).json({ error: 'userId is required' });
     }
 
+    const clientData = clientsMap.get(userId);
+    if (clientData) {
+      // อัพเดท lastUsed timestamp
+      clientData.lastUsed = Date.now();
+    }
+
     const isForwarding = intervalsMap.has(userId);
     const storedMessages = messagesMap.get(userId) || [];
-    const client = clientsMap.get(userId);
 
     res.json({
       success: true,
       isActive: isForwarding,
       messageCount: storedMessages.length,
-      isClientConnected: !!client,
+      isClientConnected: !!clientData?.client,
+      clientInfo: clientData ? {
+        createdAt: new Date(clientData.createdAt).toISOString(),
+        lastUsed: new Date(clientData.lastUsed).toISOString(),
+        uptime: Date.now() - clientData.createdAt
+      } : null,
       lastMessage: storedMessages[0] ? {
         messageId: storedMessages[0].id,
         text: storedMessages[0].message,
@@ -536,6 +592,12 @@ const getForwardingStatusFromDB = async (req, res) => {
       return res.status(400).json({ error: 'userId is required' });
     }
 
+    const clientData = clientsMap.get(userId);
+    if (clientData) {
+      // อัพเดท lastUsed timestamp
+      clientData.lastUsed = Date.now();
+    }
+
     const [rows] = await db.execute(
       'SELECT status FROM forward WHERE userid = ?',
       [userId]
@@ -545,7 +607,12 @@ const getForwardingStatusFromDB = async (req, res) => {
 
     res.json({
       status: status,
-      userId
+      userId,
+      clientInfo: clientData ? {
+        createdAt: new Date(clientData.createdAt).toISOString(),
+        lastUsed: new Date(clientData.lastUsed).toISOString(),
+        uptime: Date.now() - clientData.createdAt
+      } : null
     });
 
   } catch (error) {
@@ -556,6 +623,28 @@ const getForwardingStatusFromDB = async (req, res) => {
     });
   }
 };
+
+// เพิ่ม cleanup routine
+const cleanupInactiveClients = async () => {
+    const now = Date.now();
+    for (const [userId, clientData] of clientsMap.entries()) {
+        if (now - clientData.lastUsed > CLIENT_TIMEOUT) {
+            console.log(`Cleaning up inactive client for user: ${userId}`);
+            try {
+                await clientData.client.disconnect();
+                clientsMap.delete(userId);
+                intervalsMap.delete(userId);
+                messagesMap.delete(userId);
+                userBatchSizesMap.delete(userId);
+            } catch (error) {
+                console.error(`Error cleaning up client for user ${userId}:`, error);
+            }
+        }
+    }
+};
+
+// เริ่ม cleanup routine
+setInterval(cleanupInactiveClients, CLEANUP_INTERVAL);
 
 module.exports = {
   handleInitialize,
