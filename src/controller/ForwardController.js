@@ -379,7 +379,7 @@ const resetUserBatchSize = (userId) => {
 
 const beginForwarding = async (req, res) => {
   try {
-    const { userId, sourceChatId, destinationChatIds, interval = 5 } = req.body;
+    const { userId, sourceChatId, destinationChatIds, forward_interval = 5 } = req.body;
     
     const clientData = clientsMap.get(userId);
     if (!clientData) {
@@ -389,7 +389,13 @@ const beginForwarding = async (req, res) => {
     // อัพเดท lastUsed timestamp
     clientData.lastUsed = Date.now();
 
-    // Check if record exists first
+    if (forward_interval < 1 || forward_interval > 60) {
+      return res.status(400).json({
+        error: 'Invalid forward_interval (1-60 minutes)'
+      });
+    }
+
+    // Check if record exists and update with new forward_interval
     try {
       const [rows] = await db.execute(
         'SELECT userid FROM forward WHERE userid = ?',
@@ -397,31 +403,21 @@ const beginForwarding = async (req, res) => {
       );
 
       if (rows.length === 0) {
-        // Insert new record if doesn't exist
         await db.execute(
-          'INSERT INTO forward (userid, status) VALUES (?, 1)',
-          [userId]
+          'INSERT INTO forward (userid, status, forward_interval) VALUES (?, 1, ?)',
+          [userId, forward_interval]
         );
-        console.log(`Created new forwarding record for user ${userId}`);
+        console.log(`Created new forwarding record for user ${userId} with forward_interval ${forward_interval}`);
       } else {
-        // Update existing record
         await db.execute(
-          'UPDATE forward SET status = 1 WHERE userid = ?',
-          [userId]
+          'UPDATE forward SET status = 1, forward_interval = ? WHERE userid = ?',
+          [forward_interval, userId]
         );
-        console.log(`Updated forwarding status for user ${userId} to active`);
+        console.log(`Updated forwarding status and forward_interval for user ${userId}`);
       }
     } catch (dbError) {
       console.error('Database error:', dbError);
       return res.status(500).json({ error: 'Failed to update forwarding status' });
-    }
-
-    const groupCooldowns = await getGroupCooldowns(clientData.client, destinationChatIds);
-
-    if (interval < 1 || interval > 60) {
-      return res.status(400).json({
-        error: 'Invalid interval (1-60 minutes)'
-      });
     }
 
     // เก็บข้อความเริ่มต้น
@@ -429,7 +425,6 @@ const beginForwarding = async (req, res) => {
     console.log(`Found ${initialMessages.length} message to forward repeatedly`);
     
     if (initialMessages.length > 0) {
-      // เก็บข้อความเริ่มต้นใน messagesMap
       messagesMap.set(userId, [initialMessages[0]]);
       console.log('Stored initial message for repeated forwarding:', initialMessages[0].id);
     } else {
@@ -446,14 +441,14 @@ const beginForwarding = async (req, res) => {
     }
 
     // ตั้ง interval ใหม่สำหรับ forward ซ้ำๆ
-    const intervalMs = interval * 60 * 1000;
+    const intervalMs = forward_interval * 60 * 1000;
     const newInterval = setInterval(
       () => autoForwardMessages(userId, sourceChatId, destinationChatIds),
       intervalMs
     );
 
     intervalsMap.set(userId, newInterval);
-    console.log(`Set new interval to forward every ${interval} minutes`);
+    console.log(`Set new interval to forward every ${forward_interval} minutes`);
 
     // เริ่มส่งข้อความครั้งแรกทันที
     autoForwardMessages(userId, sourceChatId, destinationChatIds);
@@ -462,7 +457,7 @@ const beginForwarding = async (req, res) => {
       success: true,
       message: 'Forwarding started - will repeatedly forward initial messages',
       settings: { 
-        intervalMinutes: interval,
+        forward_interval: forward_interval,
         initialMessageCount: initialMessages.length,
         groupCooldowns
       }
@@ -488,13 +483,13 @@ const stopContinuousAutoForward = async (req, res) => {
       }
     }
 
-    // Update database status to inactive
+    // Update database status to inactive and reset forward_interval
     try {
       await db.execute(
-        'UPDATE forward SET status = 0 WHERE userid = ?',
+        'UPDATE forward SET status = 0, forward_interval = 0 WHERE userid = ?',
         [userId]
       );
-      console.log(`Updated forwarding status for user ${userId} to inactive`);
+      console.log(`Updated forwarding status and reset interval for user ${userId}`);
     } catch (dbError) {
       console.error('Database error:', dbError);
     }
@@ -594,19 +589,20 @@ const getForwardingStatusFromDB = async (req, res) => {
 
     const clientData = clientsMap.get(userId);
     if (clientData) {
-      // อัพเดท lastUsed timestamp
       clientData.lastUsed = Date.now();
     }
 
     const [rows] = await db.execute(
-      'SELECT status FROM forward WHERE userid = ?',
+      'SELECT status, forward_interval FROM forward WHERE userid = ?',
       [userId]
     );
 
     const status = rows.length > 0 ? rows[0].status : 0;
+    const forward_interval = rows.length > 0 ? rows[0].forward_interval : null;
 
     res.json({
       status: status,
+      forward_interval: forward_interval,
       userId,
       clientInfo: clientData ? {
         createdAt: new Date(clientData.createdAt).toISOString(),
