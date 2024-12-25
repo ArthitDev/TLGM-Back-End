@@ -162,17 +162,8 @@ const stopClient = async (req, res) => {
     const { apiId } = req.params;
     const { userid } = req.body;
 
-    const clientKey = `${apiId}_${userid}`;
-    const clientData = clients[clientKey];
-
-    if (!clientData) {
-        return res.status(404).json({ error: "ไม่พบ Client สำหรับ API_ID และ USER_ID นี้" });
-    }
-
     try {
-        // อัพเดท lastUsed timestamp ก่อนที่จะหยุด client
-        clientData.lastUsed = Date.now();
-
+        // อัพเดทฐานข้อมูลก่อน
         const [result] = await db.execute(
             'UPDATE users SET telegram_auth = 0, session_hash = NULL WHERE userid = ?',
             [userid]
@@ -183,9 +174,19 @@ const stopClient = async (req, res) => {
             return res.status(404).json({ error: 'User not found or update failed.' });
         }
 
-        await clientData.client.disconnect();
-        delete clients[clientKey];
-        delete sessions[clientKey];
+        // หลังจากอัพเดทฐานข้อมูลแล้ว ค่อยจัดการ client ถ้ามี
+        const clientKey = `${apiId}_${userid}`;
+        const clientData = clients[clientKey];
+
+        if (clientData) {
+            try {
+                await clientData.client.disconnect();
+            } catch (error) {
+                console.warn(`Warning: Could not disconnect client ${clientKey}:`, error.message);
+            }
+            delete clients[clientKey];
+            delete sessions[clientKey];
+        }
 
         res.json({ message: "Client หยุดทำงานแล้ว", apiId });
     } catch (error) {
