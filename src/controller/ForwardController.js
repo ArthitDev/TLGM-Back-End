@@ -8,8 +8,37 @@ const CLEANUP_INTERVAL = 1000 * 60 * 15; // run cleanup every 15 minutes
 const clientsMap = new Map(); // Map<userId, { client, createdAt, lastUsed }>
 const intervalsMap = new Map();
 const messagesMap = new Map();
-const userBatchSizesMap = new Map();
+const userBatchSizesMap = new Map(); // Map<userId, currentBatchSize>
 const groupCooldowns = new Map();
+const userForwardIntervals = new Map(); // เพิ่มตัวแปรนี้
+let currentForwardId = null;
+
+const RATE_LIMIT = {
+  MESSAGES_PER_MINUTE: 20,
+  COOLDOWN_BUFFER: 2000, // 2 seconds extra wait time
+};
+
+const rateLimiter = new Map(); // Map<userId, { count, resetTime }>
+
+const checkRateLimit = (userId) => {
+  const now = Date.now();
+  const userLimit = rateLimiter.get(userId);
+  
+  if (!userLimit || now >= userLimit.resetTime) {
+    rateLimiter.set(userId, {
+      count: 1,
+      resetTime: now + 60000 // reset after 1 minute
+    });
+    return true;
+  }
+  
+  if (userLimit.count >= RATE_LIMIT.MESSAGES_PER_MINUTE) {
+    return false;
+  }
+  
+  userLimit.count++;
+  return true;
+};
 
 const initializeClient = async (userId) => {
   try {
@@ -75,6 +104,11 @@ const checkNewMessages = async (client, sourceChatId) => {
 
 const forwardMessage = async (client, msg, sourceChatId, destChatId) => {
   try {
+    if (!checkRateLimit(sourceChatId)) {
+      console.log(`Rate limit exceeded for source chat ${sourceChatId}`);
+      return false;
+    }
+
     const chat = await client.getEntity(destChatId).catch(e => null);
     if (!chat) {
       console.log(`ไม่สามารถเข้าถึงกลุ่ม ${destChatId}: กลุ่มอาจไม่มีอยู่หรือไม่ได้เป็นสมาชิก`);
@@ -99,7 +133,7 @@ const forwardMessage = async (client, msg, sourceChatId, destChatId) => {
     }
 
     console.log(`Successfully forwarded message ID: ${msg.id} to ${destChatId}`);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, RATE_LIMIT.COOLDOWN_BUFFER));
     return true;
   } catch (error) {
     if (error.message.includes('PEER_ID_INVALID')) {
@@ -124,84 +158,6 @@ const getGroupCooldowns = async (client, chatIds) => {
     }
   }
   return cooldowns;
-};
-
-const startContinuousAutoForward = async (req, res) => {
-  try {
-    const { userId, sourceChatId, destinationChatIds } = req.body;
-    const clientData = clientsMap.get(userId);
-    
-    if (!clientData) {
-      return res.status(400).json({ error: 'Client not initialized' });
-    }
-
-    // อัพเดท lastUsed timestamp
-    clientData.lastUsed = Date.now();
-    
-    if (!userId || !sourceChatId || !Array.isArray(destinationChatIds)) {
-      return res.status(400).json({
-        error: 'Invalid parameters'
-      });
-    }
-
-    const client = clientData.client;
-    if (!client) {
-      return res.status(400).json({ error: 'Client not initialized' });
-    }
-
-    // ต่งข้อความ hello world ไปยังทุกกลุ่มปลายทางก่อน
-    for (const destChatId of destinationChatIds) {
-      try {
-        await client.sendMessage(destChatId, { message: 'hello world' });
-        console.log(`Sent initial hello world message to ${destChatId}`);
-        // รอ 1 วินาทีระหว่างการส่งแต่ละกลุ่ม
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } catch (error) {
-        console.error(`Failed to send hello world to ${destChatId}:`, error.message);
-        return res.status(400).json({ 
-          error: `Unable to send messages to group ${destChatId}. Please check permissions.` 
-        });
-      }
-    }
-
-    // ตั้งค่า timeout สำหรับการรอ (เช่น 30 วินาที)
-    const TIMEOUT = 30000;
-    const startTime = Date.now();
-
-    // วนลูปตรวจสอบข้อความใหม่
-    while (Date.now() - startTime < TIMEOUT) {
-      const unforwardedMessages = await checkNewMessages(client, sourceChatId);
-      
-      if (unforwardedMessages.length > 0) {
-        // พบข้อความใหม่
-        return res.json({
-          success: true,
-          status: 'FOUND',
-          message: 'New messages found',
-          data: unforwardedMessages.map(msg => ({
-            messageId: msg.id,
-            text: msg.message,
-            date: new Date(msg.date * 1000)
-          }))
-        });
-      }
-
-      // รอ 1 วินาทีก่อนตรวจสอบอีกครั้ง
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-
-    // หมดเวลารอแล้วยังไม่พบข้อความใหม่
-    return res.json({
-      success: true,
-      status: 'TIMEOUT',
-      message: 'No new messages found within timeout period',
-      data: []
-    });
-
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: error.message });
-  }
 };
 
 const processCooldownGroups = async (client, msg, sourceChatId, cooldownGroups) => {
@@ -295,10 +251,12 @@ const autoForwardMessages = async (userId, sourceChatId, destinationChatIds) => 
     console.log(`📝 ข้อความที่เก็บไว้: ID ${lastMessage.id}`);
     console.log(`📄 เนื้อหา: ${lastMessage.message?.substring(0, 50)}...`);
 
+    // แบ่งกลุ่มเป้าหมายเป็น chunks
     for (let i = 0; i < destinationChatIds.length; i += chunkSize) {
       chunks.push(destinationChatIds.slice(i, i + chunkSize));
     }
 
+    // ใช้ batch size แบบไดนามิก
     let currentBatchSize = Math.min(userBatchSizesMap.get(userId) || 3, 3);
     console.log(`\n🔄 แบ่งการส่งเป็น ${chunks.length} chunks (${chunkSize} กลุ่ม/chunk)`);
     console.log(`📦 Batch size: ${currentBatchSize} chunks/รอบ`);
@@ -348,9 +306,32 @@ const autoForwardMessages = async (userId, sourceChatId, destinationChatIds) => 
       const successCount = results.filter(r => r).length;
       const failedCount = results.filter(r => !r).length;
       
+      // บันทึกผลลัพธ์ลงฐานข้อมูล
+      try {
+        if (currentForwardId) {
+          await db.execute(
+            'INSERT INTO forward_detail (forward_id, success_count, fail_count) VALUES (?, ?, ?)',
+            [currentForwardId, successCount, failedCount]
+          );
+        }
+      } catch (dbError) {
+        console.error('Error recording batch results:', dbError);
+      }
+
       console.log(`\n📊 สรุปผลการส่งรอบนี้:`);
       console.log(`✅ สำเร็จ: ${successCount} กลุ่ม`);
       console.log(`❌ ไม่สำเร็จ: ${failedCount} กลุ่ม`);
+
+      // ปรับ batch size ตามผลลัพธ์
+      if (successCount > failedCount * 2) {
+        // ถ้าส่งสำเร็จมากกว่าล้มเหลว 2 เท่า เพิ่ม batch size
+        currentBatchSize = Math.min(currentBatchSize + 1, 5);
+        userBatchSizesMap.set(userId, currentBatchSize);
+      } else if (failedCount > successCount) {
+        // ถ้าล้มเหลวมากกว่าสำเร็จ ลด batch size
+        currentBatchSize = Math.max(currentBatchSize - 1, 1);
+        userBatchSizesMap.set(userId, currentBatchSize);
+      }
 
       if (i + currentBatchSize < chunks.length) {
         const delayTime = 5000;
@@ -381,9 +362,30 @@ const beginForwarding = async (req, res) => {
   try {
     const { userId, sourceChatId, destinationChatIds, forward_interval = 5 } = req.body;
     
-    const clientData = clientsMap.get(userId);
+    // 1. เช็ค client ถ้าไม่มีให้ initialize ใหม่
+    let clientData = clientsMap.get(userId);
     if (!clientData) {
-      return res.status(400).json({ error: 'Client not initialized' });
+      try {
+        await initializeClient(userId);
+        clientData = clientsMap.get(userId);
+      } catch (error) {
+        return res.status(400).json({ 
+          error: 'Failed to initialize client' 
+        });
+      }
+    }
+
+    // Create new forward record
+    try {
+      const [result] = await db.execute(
+        'INSERT INTO forward (userid, status, forward_interval) VALUES (?, 1, ?)',
+        [userId, forward_interval]
+      );
+      currentForwardId = result.insertId;
+      console.log(`Created new forwarding record with ID: ${currentForwardId}`);
+    } catch (dbError) {
+      console.error('Database error:', dbError);
+      return res.status(500).json({ error: 'Failed to create forwarding record' });
     }
 
     // อัพเดท lastUsed timestamp
@@ -395,32 +397,7 @@ const beginForwarding = async (req, res) => {
       });
     }
 
-    // Check if record exists and update with new forward_interval
-    try {
-      const [rows] = await db.execute(
-        'SELECT userid FROM forward WHERE userid = ?',
-        [userId]
-      );
-
-      if (rows.length === 0) {
-        await db.execute(
-          'INSERT INTO forward (userid, status, forward_interval) VALUES (?, 1, ?)',
-          [userId, forward_interval]
-        );
-        console.log(`Created new forwarding record for user ${userId} with forward_interval ${forward_interval}`);
-      } else {
-        await db.execute(
-          'UPDATE forward SET status = 1, forward_interval = ? WHERE userid = ?',
-          [forward_interval, userId]
-        );
-        console.log(`Updated forwarding status and forward_interval for user ${userId}`);
-      }
-    } catch (dbError) {
-      console.error('Database error:', dbError);
-      return res.status(500).json({ error: 'Failed to update forwarding status' });
-    }
-
-    // เก็บข้อความเริ่มต้น
+    // เก็บ��้อความเริ่มต้น
     const initialMessages = await clientData.client.getMessages(sourceChatId, { limit: 1 });
     console.log(`Found ${initialMessages.length} message to forward repeatedly`);
     
@@ -450,6 +427,9 @@ const beginForwarding = async (req, res) => {
     intervalsMap.set(userId, newInterval);
     console.log(`Set new interval to forward every ${forward_interval} minutes`);
 
+    // เร็บค่า interval
+    userForwardIntervals.set(userId, forward_interval);
+
     // เริ่มส่งข้อความครั้งแรกทันที
     autoForwardMessages(userId, sourceChatId, destinationChatIds);
 
@@ -457,6 +437,7 @@ const beginForwarding = async (req, res) => {
       success: true,
       message: 'Forwarding started - will repeatedly forward initial messages',
       settings: { 
+        forward_id: currentForwardId,
         forward_interval: forward_interval,
         initialMessageCount: initialMessages.length,
         groupCooldowns
@@ -470,46 +451,32 @@ const beginForwarding = async (req, res) => {
 const stopContinuousAutoForward = async (req, res) => {
   try {
     const { userId } = req.body;
-    
-    const clientData = clientsMap.get(userId);
-    if (clientData) {
-      // อัพเดท lastUsed timestamp ก่อนที่จะหยุด
-      clientData.lastUsed = Date.now();
-      
+
+    // Update forward record status to inactive
+    if (currentForwardId) {
       try {
-        await clientData.client.disconnect();
-      } catch (disconnectError) {
-        console.error('Error disconnecting client:', disconnectError);
+        await db.execute(
+          'UPDATE forward SET status = 0 WHERE forward_id = ?',
+          [currentForwardId]
+        );
+        console.log(`Updated forwarding status for ID ${currentForwardId}`);
+        currentForwardId = null;
+      } catch (dbError) {
+        console.error('Database error:', dbError);
       }
     }
 
-    // Update database status to inactive and reset forward_interval
-    try {
-      await db.execute(
-        'UPDATE forward SET status = 0, forward_interval = 0 WHERE userid = ?',
-        [userId]
-      );
-      console.log(`Updated forwarding status and reset interval for user ${userId}`);
-    } catch (dbError) {
-      console.error('Database error:', dbError);
-    }
+    // เรียกใช้ cleanupResources แทนการลบทีละ Map
+    await cleanupResources(userId);
 
-    // Cleanup all maps
-    if (intervalsMap.has(userId)) {
-      clearInterval(intervalsMap.get(userId));
-      intervalsMap.delete(userId);
-    }
-    clientsMap.delete(userId);
-    messagesMap.delete(userId);
-    userBatchSizesMap.delete(userId);
+    // ลบค่า interval
+    userForwardIntervals.delete(userId);
 
-    console.log(`Auto-forward stopped for user ${userId}`);
     res.json({ 
       success: true, 
       message: 'Auto-forward stopped successfully' 
     });
   } catch (error) {
-    console.error('Error stopping auto-forward:', error);
     res.status(500).json({
       error: 'Failed to stop auto-forward',
       details: error.message
@@ -545,80 +512,46 @@ const checkForwardingStatus = async (req, res) => {
   try {
     const { userId } = req.body;
     
-    if (!userId) {
-      return res.status(400).json({ error: 'userId is required' });
-    }
-
     const clientData = clientsMap.get(userId);
     if (clientData) {
-      // อัพเดท lastUsed timestamp
       clientData.lastUsed = Date.now();
     }
 
     const isForwarding = intervalsMap.has(userId);
     const storedMessages = messagesMap.get(userId) || [];
+    const currentInterval = userForwardIntervals.get(userId) || 5; // ใช้ค่าที่เก็บไว้หรือค่า default
 
     res.json({
       success: true,
-      isActive: isForwarding,
-      messageCount: storedMessages.length,
-      isClientConnected: !!clientData?.client,
-      clientInfo: clientData ? {
-        createdAt: new Date(clientData.createdAt).toISOString(),
-        lastUsed: new Date(clientData.lastUsed).toISOString(),
-        uptime: Date.now() - clientData.createdAt
-      } : null,
-      lastMessage: storedMessages[0] ? {
+      status: isForwarding ? 1 : 0,
+      currentForward: {
+        status: isForwarding ? 1 : 0,
+        forward_interval: currentInterval, // ใช้ค่าที่เก็บไว้
+        created_at: clientData?.createdAt,
+        last_updated: clientData?.lastUsed
+      },
+      messageInfo: storedMessages[0] ? {
         messageId: storedMessages[0].id,
-        text: storedMessages[0].message,
+        text: storedMessages[0].message?.substring(0, 50) + '...',
         date: new Date(storedMessages[0].date * 1000)
-      } : null
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-
-const getForwardingStatusFromDB = async (req, res) => {
-  try {
-    const { userId } = req.body;
-    
-    if (!userId) {
-      return res.status(400).json({ error: 'userId is required' });
-    }
-
-    const clientData = clientsMap.get(userId);
-    if (clientData) {
-      clientData.lastUsed = Date.now();
-    }
-
-    const [rows] = await db.execute(
-      'SELECT status, forward_interval FROM forward WHERE userid = ?',
-      [userId]
-    );
-
-    const status = rows.length > 0 ? rows[0].status : 0;
-    const forward_interval = rows.length > 0 ? rows[0].forward_interval : null;
-
-    res.json({
-      status: status,
-      forward_interval: forward_interval,
-      userId,
+      } : null,
       clientInfo: clientData ? {
         createdAt: new Date(clientData.createdAt).toISOString(),
         lastUsed: new Date(clientData.lastUsed).toISOString(),
-        uptime: Date.now() - clientData.createdAt
+        uptime: Date.now() - clientData.createdAt,
+        isConnected: !!clientData.client
       } : null
     });
 
   } catch (error) {
-    console.error('Error fetching forwarding status:', error);
+    console.error('Error checking forwarding status:', error);
     res.status(500).json({ 
-      error: 'Failed to fetch forwarding status',
+      error: 'Failed to check status',
       details: error.message 
     });
   }
 };
+
 
 // เพิ่ม cleanup routine
 const cleanupInactiveClients = async () => {
@@ -627,11 +560,7 @@ const cleanupInactiveClients = async () => {
         if (now - clientData.lastUsed > CLIENT_TIMEOUT) {
             console.log(`Cleaning up inactive client for user: ${userId}`);
             try {
-                await clientData.client.disconnect();
-                clientsMap.delete(userId);
-                intervalsMap.delete(userId);
-                messagesMap.delete(userId);
-                userBatchSizesMap.delete(userId);
+                await cleanupResources(userId);
             } catch (error) {
                 console.error(`Error cleaning up client for user ${userId}:`, error);
             }
@@ -642,11 +571,191 @@ const cleanupInactiveClients = async () => {
 // เริ่ม cleanup routine
 setInterval(cleanupInactiveClients, CLEANUP_INTERVAL);
 
+// เพิ่มฟังก์ชันสำหรับทำความสะอาด resources
+const cleanupResources = async (userId) => {
+  try {
+    const clientData = clientsMap.get(userId);
+    if (clientData?.client) {
+      await clientData.client.disconnect();
+    }
+    
+    // ล้าง Maps ทั้งหมดที่เกี่ยวข้องกับ user
+    clientsMap.delete(userId);
+    intervalsMap.delete(userId);
+    messagesMap.delete(userId);
+    userBatchSizesMap.delete(userId);
+    
+    console.log(`🧹 Cleaned up resources for user ${userId}`);
+  } catch (error) {
+    console.error(`❌ Error cleaning up resources for user ${userId}:`, error);
+  }
+};
+
+const handleForwardError = async (error, userId, forwardId) => {
+  console.error(`❌ Forward error for user ${userId}:`, error);
+  
+  try {
+    // บันทึก error ลงฐานข้อมูล
+    await db.execute(
+      'INSERT INTO forward_errors (forward_id, error_message, created_at) VALUES (?, ?, NOW())',
+      [forwardId, error.message]
+    );
+    
+    // อัพเดทสถานะ forward เป็น error ถ้าจำเป็น
+    if (error.critical) {
+      await db.execute(
+        'UPDATE forward SET status = 2 WHERE forward_id = ?', // 2 = error status
+        [forwardId]
+      );
+    }
+    
+    // รีเซ็ต batch size
+    resetUserBatchSize(userId);
+    
+  } catch (dbError) {
+    console.error('Failed to record error:', dbError);
+  }
+};
+
+const checkClientHealth = async (userId) => {
+  const clientData = clientsMap.get(userId);
+  if (!clientData) return false;
+  
+  try {
+    // ทดสอบการเชื่อมต่อ
+    const isConnected = await clientData.client.isConnected();
+    if (!isConnected) {
+      console.log(`🔄 Reconnecting client for user ${userId}...`);
+      await clientData.client.connect();
+    }
+    return true;
+  } catch (error) {
+    console.error(`❌ Client health check failed for user ${userId}:`, error);
+    return false;
+  }
+};
+
+const getActiveForwarders = async (req, res) => {
+  try {
+    // นับจำนวนผู้ใช้ที่กำลัง forward อยู่จาก intervalsMap
+    const activeForwarders = intervalsMap.size;
+    
+    res.json({
+      success: true,
+      activeForwarders,
+    });
+  } catch (error) {
+    console.error('Error getting active forwarders:', error);
+    res.status(500).json({ 
+      error: 'Failed to get active forwarders count',
+      details: error.message 
+    });
+  }
+};
+
+const dashboardAdmin = async (req, res) => {
+  try {
+    // Query daily data
+    const [dailyData] = await db.execute(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as total_forwards
+      FROM forward
+      WHERE created_at >= CURDATE()
+      GROUP BY DATE(created_at)
+    `);
+
+    const [dailyDetails] = await db.execute(`
+      SELECT 
+        DATE(insert_time) as date,
+        SUM(success_count) as total_success,
+        SUM(fail_count) as total_fail
+      FROM forward_detail
+      WHERE insert_time >= CURDATE()
+      GROUP BY DATE(insert_time)
+    `);
+
+    // Query weekly data
+    const [weeklyData] = await db.execute(`
+      SELECT 
+        YEARWEEK(created_at, 1) as week,
+        COUNT(*) as total_forwards
+      FROM forward
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+      GROUP BY YEARWEEK(created_at, 1)
+    `);
+
+    const [weeklyDetails] = await db.execute(`
+      SELECT 
+        YEARWEEK(insert_time, 1) as week,
+        SUM(success_count) as total_success,
+        SUM(fail_count) as total_fail
+      FROM forward_detail
+      WHERE insert_time >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+      GROUP BY YEARWEEK(insert_time, 1)
+    `);
+
+    // Query monthly data
+    const [monthlyData] = await db.execute(`
+      SELECT 
+        DATE_FORMAT(created_at, '%Y-%m') as month,
+        COUNT(*) as total_forwards
+      FROM forward
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+      GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+    `);
+
+    const [monthlyDetails] = await db.execute(`
+      SELECT 
+        DATE_FORMAT(insert_time, '%Y-%m') as month,
+        SUM(success_count) as total_success,
+        SUM(fail_count) as total_fail
+      FROM forward_detail
+      WHERE insert_time >= DATE_SUB(CURDATE(), INTERVAL 1 YEAR)
+      GROUP BY DATE_FORMAT(insert_time, '%Y-%m')
+    `);
+
+    // Query yearly data
+    const [yearlyData] = await db.execute(`
+      SELECT 
+        YEAR(created_at) as year,
+        COUNT(*) as total_forwards
+      FROM forward
+      GROUP BY YEAR(created_at)
+    `);
+
+    const [yearlyDetails] = await db.execute(`
+      SELECT 
+        YEAR(insert_time) as year,
+        SUM(success_count) as total_success,
+        SUM(fail_count) as total_fail
+      FROM forward_detail
+      GROUP BY YEAR(insert_time)
+    `);
+
+    res.json({
+      success: true,
+      data: {
+        daily: { forwards: dailyData, details: dailyDetails },
+        weekly: { forwards: weeklyData, details: weeklyDetails },
+        monthly: { forwards: monthlyData, details: monthlyDetails },
+        yearly: { forwards: yearlyData, details: yearlyDetails }
+      }
+    });
+  } catch (error) {
+    console.error('Error generating dashboard data:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate dashboard data',
+      details: error.message 
+    });
+  }
+};
+
 module.exports = {
   handleInitialize,
-  startContinuousAutoForward,
   beginForwarding,
   stopContinuousAutoForward,
   checkForwardingStatus,
-  getForwardingStatusFromDB
+  getActiveForwarders,
+  dashboardAdmin
 };
